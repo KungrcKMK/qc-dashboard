@@ -2,715 +2,180 @@
 <html lang="th">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>QC Report - Dynamic Trend</title>
-    
-    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-    <script src="https://unpkg.com/prop-types/prop-types.min.js"></script>
-    <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <script src="https://unpkg.com/lucide@latest"></script>
-    <script src="https://cdn.tailwindcss.com"></script>
-
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Multi-Barcode Scanner Pro</title>
+    <script type="text/javascript" src="https://unpkg.com/@zxing/library@latest"></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap');
-        body { font-family: 'Sarabun', sans-serif; background-color: #f0f9ff; }
-        .glass-card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); border: 1px solid #e2e8f0; }
-        .gradient-header { background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%); color: white; }
-        #root { min-height: 100vh; }
+        :root { --primary: #1a73e8; --danger: #ea4335; }
+        body { 
+            font-family: -apple-system, sans-serif; 
+            margin: 0; padding: 10px; 
+            background: #f8f9fa; display: flex; flex-direction: column; align-items: center;
+        }
+        h2 { margin: 10px 0; font-size: 1.2rem; color: #333; }
+
+        #scanner-container {
+            position: relative;
+            width: 100%;
+            max-width: 500px;
+            aspect-ratio: 4/3;
+            background: #000;
+            border-radius: 15px;
+            overflow: hidden;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.2);
+        }
+
+        video { width: 100%; height: 100%; object-fit: cover; }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+
+        #result-panel {
+            width: 100%;
+            max-width: 500px;
+            margin-top: 15px;
+            background: #fff;
+            border-radius: 12px;
+            padding: 15px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+        }
+
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .counter { font-weight: bold; color: var(--primary); font-size: 1.1rem; }
         
-        ::-webkit-scrollbar { width: 8px; height: 8px; }
-        ::-webkit-scrollbar-track { background: #f1f5f9; }
-        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        #list { 
+            max-height: 200px; overflow-y: auto; 
+            border-top: 1px solid #eee; padding-top: 10px;
+        }
+        .item { 
+            background: #f1f3f4; padding: 10px; border-radius: 6px; 
+            margin-bottom: 5px; font-family: monospace; font-size: 0.9rem;
+            display: flex; justify-content: space-between;
+        }
+        .btn {
+            background: var(--danger); color: #fff; border: none;
+            padding: 6px 12px; border-radius: 6px; cursor: pointer;
+        }
+        .loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: white; font-size: 0.9rem;
+        }
     </style>
 </head>
 <body>
-    <div id="root">
-        <div style="height: 100vh; display: flex; justify-content: center; align-items: center; flex-direction: column;">
-            <div style="width: 50px; height: 50px; border: 5px solid #cbd5e1; border-top-color: #1e3a8a; border-radius: 50%; animation: spin 1s linear infinite;"></div>
-            <div style="margin-top: 20px; font-weight: bold; color: #1e3a8a;">กำลังโหลดข้อมูล QC Dashboard...</div>
-        </div>
+
+    <h2>Multi-Barcode Scanner</h2>
+
+    <div id="scanner-container">
+        <div id="loading-text" class="loading">กำลังเปิดกล้อง...</div>
+        <video id="video"></video>
+        <canvas id="overlay"></canvas>
     </div>
 
-    <script type="text/babel">
-        // --- 1. Check Libraries ---
-        let Recharts = window.Recharts;
-        if (!Recharts && window.Recharts && window.Recharts.default) Recharts = window.Recharts.default;
-        if (!Recharts) throw new Error("Recharts not found");
+    <div id="result-panel">
+        <div class="header">
+            <div class="counter">พบแล้ว: <span id="count">0</span></div>
+            <button class="btn" onclick="clearAll()">ล้างข้อมูล</button>
+        </div>
+        <div id="list"></div>
+    </div>
 
-        const { LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } = Recharts;
-        const { useState, useMemo, useEffect } = React;
+    <script>
+        const codeReader = new ZXing.BrowserMultiFormatReader();
+        const videoElement = document.getElementById('video');
+        const overlayCanvas = document.getElementById('overlay');
+        const ctx = overlayCanvas.getContext('2d');
+        const listDiv = document.getElementById('list');
+        const countSpan = document.getElementById('count');
+        const loadingText = document.getElementById('loading-text');
 
-        const API_URL = "https://script.google.com/macros/s/AKfycbx94cydYxN1bOSkDVFQlTxVY1QfNKi7AjmYlHOMo9exV9xioIs6vBvlE-GzLUuNY-AY5Q/exec";
+        let foundCodes = new Set();
 
-        // --- 2. Offline Data ---
-        const OFFLINE_DATA = [
-            { date: "2026-02-16", time: "11:00", report: "asวุ้นขาวขุ่น เนื้อเป็นเสี้ยน แข็งมากค่ะ", category: "คุณภาพเนื้อวุ้น" },
-            { date: "2026-02-15", time: "10:30", report: "asเจอเส้นผม เหมี่ยว 1 ส้ม 3 พิพัฒน์ 2 ค่ะ ในลูกตาล", category: "เส้นผม/ขน" },
-            { date: "2026-02-13", time: "09:00", report: "asเจอเศษแก้วในวุ้นค่ะ อันตรายมาก", category: "แก้ว/กระจก" },
-            { date: "2026-02-12", time: "15:02", report: "Asแมลงฝั่งอยุ่ในวุ้นมะพร้าว คนหั่นเจอค่ะ", category: "แมลง/มด" },
-            { date: "2026-02-12", time: "09:58", report: "Asผงดำ เปลือกตาลติดตาลเชื่อม ตรวจเจอก่อนเอาไปใช้ค่ะ", category: "สิ่งเจือปน" },
-            { date: "2026-02-12", time: "08:30", report: "วุ้นเป็นจุดดำ ขยะดำฝังในเนื้อค่ะ", category: "จุดดำ/ขยะดำ" },
-            { date: "2026-02-11", time: "16:57", report: "asเจอเส้นผม พิพัฒน์ 2 จุ้ม 1 เหมี่ยว 1 ค่ะ ในถ้วยลูกตาล", category: "เส้นผม/ขน" },
-            { date: "2026-02-11", time: "15:26", report: "Asเส้นผม แมลง ขยะดำ เศษพลาสติกสีแดงติดวุ้นลอนตาลเชื่อม", category: "หลายประเภท" },
-            { date: "2026-02-10", time: "12:22", report: "Asขยะสีน้ำตาล สีดำ วุ้นยาว ตรวจเจอก่อนเอาไปใช้ค่ะ", category: "สิ่งเจือปน" },
-            { date: "2026-02-05", time: "12:21", report: "Asเศษพลาสติกสีฟ้า ขนตาติดวุ้นลอนตาลเชื่อม", category: "พลาสติก/ยาง" },
-            { date: "2026-02-04", time: "11:59", report: "as เจอเส้นติดมากับวุ้นค่ะ คนล้างเจอ วุ้นณรงค์ค่ะ", category: "เส้นผม/ขน" },
-            { date: "2026-01-25", time: "17:20", report: "As เจอมดอยุ่ในวุ้น คะ วุ้นของนุ่น คนล้างวุ้นเจอคะ", category: "แมลง/มด" }
-        ];
-
-        const COLORS = ['#3b82f6', '#ef4444', '#f59e0b', '#10b981', '#8b5cf6', '#6366f1', '#ec4899', '#64748b'];
-        const STACK_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#6366f1', '#94a3b8'];
-        const MONTH_NAMES = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
-
-        const getWeekNumber = (d) => {
-            d = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-            d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay()||7));
-            var yearStart = new Date(Date.UTC(d.getUTCFullYear(),0,1));
-            var weekNo = Math.ceil(( ( (d - yearStart) / 86400000) + 1)/7);
-            return weekNo;
+        // เสียง Beep (แบบไม่ต้องพึ่งไฟล์)
+        function beep() {
+            const context = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = context.createOscillator();
+            const gain = context.createGain();
+            osc.connect(gain);
+            gain.connect(context.destination);
+            osc.frequency.value = 880;
+            gain.gain.value = 0.1;
+            osc.start();
+            osc.stop(context.currentTime + 0.1);
         }
 
-        // --- 3. Parser Logic ---
-        const STAFF_NAMES = [
-            'พิพัฒน์', 'เหมี่ยว', 'จุ้ม', 'ส้ม', 'พัฒน์', 'เรณู', 'เพ็ญ', 'ต่าย', 'เม้า', 
-            'ยอง', 'ยุพิน', 'สมนึก', 'ถนอม', 'ก้อน', 'ต่๊อก', 'ครูบังอร', 'ลอง', 'เยาว์', 
-            'นวล', 'เรียม', 'หลง', 'เอียด', 'แกละ', 'ก้อง', 'อุษา', 'น้อง', 'แต', 'สัน', 'คุ้ม'
-        ];
-
-        const parseStaffCounts = (reportText) => {
-            let text = reportText.toLowerCase();
-            const results = [];
-            if (text.includes('เสีย') || text.includes('เน่า')) return [];
-            for (let name of STAFF_NAMES) {
-                const regex = new RegExp(`(${name})\\s*[:=]?\\s*(\\d+)?`, 'g');
-                let match;
-                while ((match = regex.exec(text)) !== null) {
-                    let foundName = name;
-                    if (foundName === 'พัฒน์') foundName = 'พิพัฒน์';
-                    const count = match[2] ? parseInt(match[2]) : 1; 
-                    results.push({ name: foundName, count: count });
-                    text = text.replace(match[0], ' '); 
+        async function start() {
+            try {
+                // 1. ตรวจสอบการรองรับ MediaDevices
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    throw new Error("เบราว์เซอร์ของคุณไม่รองรับการเข้าถึงกล้อง");
                 }
+
+                // 2. ตั้งค่าการสแกน
+                const hints = new Map();
+                hints.set(ZXing.DecodeHintType.TRY_HARDER, true); // สุ่มทิศทางได้
+                hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+                    ZXing.BarcodeFormat.CODE_128,
+                    ZXing.BarcodeFormat.EAN_13,
+                    ZXing.BarcodeFormat.QR_CODE
+                ]);
+
+                // 3. เริ่มสแกนจากกล้องหลัง (FacingMode)
+                const constraints = {
+                    video: { facingMode: "environment" }
+                };
+
+                // ใช้คำสั่งสแกนต่อเนื่อง
+                codeReader.decodeFromConstraints(constraints, 'video', (result, err) => {
+                    if (videoElement.readyState >= 2) {
+                        loadingText.style.display = 'none';
+                        overlayCanvas.width = videoElement.videoWidth;
+                        overlayCanvas.height = videoElement.videoHeight;
+                    }
+
+                    if (result) {
+                        const code = result.getText();
+                        if (!foundCodes.has(code)) {
+                            foundCodes.add(code);
+                            beep();
+                            updateList(code);
+                            highlight(result.getResultPoints());
+                        }
+                    }
+                }, hints);
+
+            } catch (e) {
+                loadingText.innerText = "เกิดข้อผิดพลาด";
+                alert("Error: " + e.message + "\nกรุณาตรวจสอบ HTTPS และการอนุญาตกล้อง");
             }
-            return results;
-        };
+        }
 
-        const classifyIssue = (text) => {
-            if (!text) return "ไม่ระบุ";
-            const t = text.toLowerCase();
-            if (t.includes('แก้ว') || t.includes('กระจก') || t.includes('ใบมีด') || t.includes('น็อต') || t.includes('ตะปู')) return 'อันตราย (แก้ว/โลหะ)';
-            if (t.includes('เลือด') || t.includes('น้ำลาย') || t.includes('เล็บ') || t.includes('พลาสเตอร์')) return 'สุขอนามัย (เลือด/เล็บ)';
-            if (t.includes('ผม') || t.includes('ขน')) return 'เส้นผม/ขน';
-            if (t.includes('แมลง') || t.includes('มด') || t.includes('หนอน') || t.includes('ยุง') || t.includes('แมง') || t.includes('จิ้งจก')) return 'สัตว์พาหะ (แมลง/มด)';
-            if (t.includes('ขุ่น') || t.includes('เสี้ยน') || t.includes('แข็ง') || t.includes('ด้าน')) return 'คุณภาพ (ขุ่น/เสี้ยน/แข็ง)';
-            if (t.includes('ขยะดำ') || t.includes('จุดดำ') || t.includes('คราบดำ') || t.includes('เศษดำ')) return 'จุดดำ/ขยะดำ';
-            if (t.includes('พลาสติก') || t.includes('ถุง') || t.includes('ยาง') || t.includes('หนังยาง')) return 'พลาสติก/ยาง';
-            if (t.includes('เชือก') || t.includes('ฟาง') || t.includes('ปอ') || t.includes('ด้าย')) return 'เชือก/ฟาง';
-            if (t.includes('หิน') || t.includes('กรวด') || t.includes('ทราย') || t.includes('ดิน')) return 'ดิน/หิน/ทราย';
-            if (t.includes('ไม้') || t.includes('ก้าน') || t.includes('เปลือก') || t.includes('กาก')) return 'ส่วนประกอบพืช';
-            if (t.includes('ดำ') || t.includes('ฝุ่น') || t.includes('ผง')) return 'สิ่งเจือปน (ฝุ่น/ผง)';
-            if (t.includes('เสีย') || t.includes('เน่า') || t.includes('บูด')) return 'IGNORE'; 
-            return 'อื่นๆ';
-        };
+        function updateList(code) {
+            const div = document.createElement('div');
+            div.className = 'item';
+            div.innerHTML = `<span>${code}</span><span style="color:#999">${new Date().toLocaleTimeString()}</span>`;
+            listDiv.prepend(div);
+            countSpan.innerText = foundCodes.size;
+        }
 
-        const detectMaterial = (text) => {
-            const t = text.toLowerCase();
-            if (t.includes('ลูกตาล') || t.includes('ตาล')) return 'ลูกตาล';
-            if (t.includes('แห้ว')) return 'แห้ว';
-            if (t.includes('วุ้น')) return 'วุ้น';
-            if (t.includes('ลำไย') || t.includes('ลำใย')) return 'ลำไย';
-            if (t.includes('แมงลัก')) return 'แมงลัก';
-            if (t.includes('ลูกลาน') || t.includes('ลาน')) return 'ลูกลาน';
-            if (t.includes('รวมมิตร')) return 'รวมมิตร';
-            if (t.includes('มัน')) return 'มันเชื่อม';
-            return 'อื่นๆ/ไม่ระบุ';
-        };
+        function highlight(points) {
+            ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+            ctx.strokeStyle = "#00ff00";
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(points[0].x, points[0].y);
+            points.forEach(p => ctx.lineTo(p.x, p.y));
+            ctx.closePath();
+            ctx.stroke();
+            setTimeout(() => ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height), 500);
+        }
 
-        const detectProcess = (text) => {
-            const t = text.toLowerCase();
-            if (t.includes('ล้าง')) return 'ล้าง';
-            if (t.includes('ตัก')) return 'ตัก/บรรจุ';
-            if (t.includes('คัด')) return 'คัดแยก';
-            if (t.includes('หั่น') || t.includes('ผ่า')) return 'เตรียม(หั่น/ผ่า)';
-            if (t.includes('ใส่') || t.includes('กรอก')) return 'ใส่/เติม';
-            if (t.includes('เคาะ')) return 'เคาะ';
-            if (t.includes('ต้ม') || t.includes('เชื่อม')) return 'ต้ม/เชื่อม';
-            if (t.includes('ท้ายไลน์') || t.includes('ซีล') || t.includes('ตรวจ') || t.includes('qc')) return 'QC/ท้ายไลน์';
-            return 'ไม่ระบุ';
-        };
+        function clearAll() {
+            foundCodes.clear();
+            listDiv.innerHTML = '';
+            countSpan.innerText = '0';
+        }
 
-        const detectSupplier = (text) => {
-            const t = text.toLowerCase();
-            if (t.includes('นุ่น')) return 'วุ้นนุ่น';
-            if (t.includes('ณรงค์')) return 'วุ้นณรงค์';
-            if (t.includes('เล็ก')) return 'วุ้นเล็ก';
-            if (t.includes('อารีย์')) return 'วุ้นอารีย์';
-            if (t.includes('อินโด')) return 'วุ้นอินโด';
-            if (t.includes('หลิน')) return 'วุ้นหลิน';
-            if (t.includes('ทูเค')) return 'วุ้นทูเค';
-            if (t.includes('cnn')) return 'ถุง CNN';
-            if (t.includes('เกษม')) return 'ลูกลานเกษม';
-            return 'ทั่วไป';
-        };
-
-        // --- 4. Main Component ---
-        const App = () => {
-            const [rawData, setRawData] = useState(OFFLINE_DATA);
-            const [processedData, setProcessedData] = useState([]);
-            const [status, setStatus] = useState('offline');
-
-            const [viewMode, setViewMode] = useState('yearly');
-            const [selectedDate, setSelectedDate] = useState('');
-            const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1);
-            const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
-            const [selectedWeek, setSelectedWeek] = useState('');
-
-            const processData = (sourceData) => {
-                let processed = [];
-                sourceData.forEach((item, originalIdx) => {
-                    const category = classifyIssue(item.report);
-                    if (category === 'IGNORE') return; 
-
-                    const staffFound = parseStaffCounts(item.report);
-                    const material = detectMaterial(item.report); 
-                    const process = detectProcess(item.report);
-                    const hour = parseInt(item.time.split(':')[0]); 
-                    
-                    const dateObj = new Date(item.date);
-                    const weekNum = !isNaN(dateObj) ? getWeekNumber(dateObj) : 0;
-                    const weekStr = `W${String(weekNum).padStart(2, '0')}`;
-                    const monthIdx = !isNaN(dateObj) ? dateObj.getMonth() + 1 : 0;
-                    const yearStr = !isNaN(dateObj) ? dateObj.getFullYear().toString() : '';
-
-                    const commonData = {
-                        ...item,
-                        category, material, process, hour, 
-                        week: weekStr, month: monthIdx, year: yearStr
-                    };
-
-                    if (staffFound.length > 0) {
-                        staffFound.forEach((staff, i) => {
-                            processed.push({
-                                ...commonData,
-                                id: `${originalIdx}-${staff.name}-${i}`,
-                                sourceName: `คุณ${staff.name}`,
-                                sourceType: 'Staff',
-                                count: staff.count
-                            });
-                        });
-                    } else {
-                        const supplierName = detectSupplier(item.report);
-                        const isSupplier = supplierName !== 'ทั่วไป';
-                        processed.push({
-                            ...commonData,
-                            id: originalIdx,
-                            sourceName: isSupplier ? `Supplier: ${supplierName}` : 'ไม่ระบุ',
-                            sourceType: isSupplier ? 'Supplier' : 'Unknown',
-                            count: 1
-                        });
-                    }
-                });
-                return processed;
-            };
-
-            const getRowSummary = (report) => {
-                const category = classifyIssue(report);
-                if (category === 'IGNORE') return null;
-                const staffFound = parseStaffCounts(report);
-                if (staffFound.length > 0) {
-                    const totalCount = staffFound.reduce((sum, s) => sum + s.count, 0);
-                    const breakdown = staffFound.map(s => `${s.name}(${s.count})`).join(", ");
-                    return { totalCount, displaySource: breakdown, isStaff: true };
-                } else {
-                    return { totalCount: 1, displaySource: detectSupplier(report) !== 'ทั่วไป' ? detectSupplier(report) : detectProcess(report), isStaff: false };
-                }
-            };
-
-            useEffect(() => {
-                setProcessedData(processData(OFFLINE_DATA));
-                fetch(API_URL)
-                    .then(res => res.json())
-                    .then(json => {
-                        if (Array.isArray(json) && json.length > 0) {
-                            setRawData(json);
-                            setProcessedData(processData(json));
-                            setStatus('online');
-                            if (json.length > 0) {
-                                setSelectedDate(json[0].date); 
-                                const d = new Date(json[0].date);
-                                if (!isNaN(d)) {
-                                    setSelectedYear(d.getFullYear().toString());
-                                    const w = getWeekNumber(d);
-                                    setSelectedWeek(`W${String(w).padStart(2,'0')}`);
-                                }
-                            }
-                        }
-                    })
-                    .catch(err => console.log("Online fetch failed"));
-            }, []);
-
-            const stats = useMemo(() => {
-                // 1. Logic to Filter Data
-                const filtered = processedData.filter(d => {
-                    if (viewMode === 'daily') {
-                        return d.date === selectedDate;
-                    } else if (viewMode === 'weekly') {
-                        return d.week === selectedWeek && d.year === selectedYear;
-                    } else if (viewMode === 'monthly') {
-                        return d.month === parseInt(selectedMonth) && d.year === selectedYear;
-                    } else if (viewMode === 'yearly') {
-                        return d.year === selectedYear;
-                    }
-                    return true;
-                });
-
-                // 2. Dropdown Lists
-                const years = {};
-                const weeks = {};
-                processedData.forEach(d => { 
-                    if(d.year) years[d.year] = true; 
-                    if(d.week) weeks[d.week] = true;
-                });
-                const yearsList = Object.keys(years).sort((a,b) => b-a);
-                const weeksList = Object.keys(weeks).sort((a,b) => b.localeCompare(a));
-
-                // 3. Stats Calculation
-                const total = filtered.reduce((sum, item) => sum + item.count, 0);
-                
-                const filterUnknown = (dataArr) => {
-                    const valid = [];
-                    const invalid = [];
-                    dataArr.forEach(d => {
-                        if (d.name.includes('ไม่ระบุ') || d.name.includes('อื่นๆ') || d.name === 'ทั่วไป') {
-                            invalid.push(d);
-                        } else {
-                            valid.push(d);
-                        }
-                    });
-                    const invalidTotal = invalid.reduce((sum, i) => sum + i.value, 0);
-                    return { valid, invalidTotal };
-                };
-
-                const sourceCounts = {};
-                filtered.forEach(d => sourceCounts[d.sourceName] = (sourceCounts[d.sourceName] || 0) + d.count);
-                const sourceAll = Object.entries(sourceCounts).map(([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value);
-                const { valid: sourceData, invalidTotal: sourceUnknown } = filterUnknown(sourceAll);
-
-                const matCounts = {};
-                filtered.forEach(d => matCounts[d.material] = (matCounts[d.material] || 0) + d.count);
-                const matAll = Object.entries(matCounts).map(([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value);
-                const { valid: materialData, invalidTotal: materialUnknown } = filterUnknown(matAll);
-
-                const procCounts = {};
-                filtered.forEach(d => procCounts[d.process] = (procCounts[d.process] || 0) + d.count);
-                const procAll = Object.entries(procCounts).map(([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value);
-                const { valid: processData, invalidTotal: processUnknown } = filterUnknown(procAll);
-
-                const catCounts = {};
-                filtered.forEach(d => catCounts[d.category] = (catCounts[d.category] || 0) + d.count);
-                const categoryData = Object.entries(catCounts).map(([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value);
-
-                // --- 4. DYNAMIC TREND LOGIC ---
-                // ถ้าเลือกรายวัน -> แสดงกราฟ Hourly
-                // ถ้าเลือกรายสัปดาห์/เดือน -> แสดงกราฟ Daily
-                // ถ้าเลือกรายปี -> แสดงกราฟ Monthly
-                
-                let dynamicTrendData = [];
-                let trendTitle = "";
-
-                if (viewMode === 'daily') {
-                    trendTitle = `แนวโน้มรายชั่วโมง (Hourly Trend: ${selectedDate})`;
-                    const hours = Array(24).fill(0);
-                    filtered.forEach(d => hours[d.hour] += d.count);
-                    dynamicTrendData = hours.map((val, h) => ({ name: `${h}:00`, value: val }));
-                } 
-                else if (viewMode === 'weekly' || viewMode === 'monthly') {
-                    trendTitle = viewMode === 'weekly' ? `แนวโน้มรายวัน (Daily Trend: ${selectedWeek})` : `แนวโน้มรายวัน (Daily Trend: ${MONTH_NAMES[selectedMonth-1]})`;
-                    // Group by Date
-                    const dailyMap = {};
-                    filtered.forEach(d => dailyMap[d.date] = (dailyMap[d.date] || 0) + d.count);
-                    dynamicTrendData = Object.entries(dailyMap)
-                        .map(([k, v]) => ({ name: k.split('-').slice(1).join('/'), value: v, rawDate: k })) // Show MM/DD
-                        .sort((a,b) => a.rawDate.localeCompare(b.rawDate));
-                } 
-                else { // yearly
-                    trendTitle = `แนวโน้มรายเดือน (Monthly Trend: ${selectedYear})`;
-                    const monthMap = {};
-                    filtered.forEach(d => monthMap[d.month] = (monthMap[d.month] || 0) + d.count);
-                    dynamicTrendData = MONTH_NAMES.map((m, i) => ({ name: m, value: monthMap[i+1] || 0 }));
-                }
-
-                // Stacked Charts logic remains similar but uses filtered data context
-                const topStaff = sourceAll.slice(0, 5).map(d => d.name);
-                const weeklyStaffMap = {};
-                const topMats = matAll.slice(0, 5).map(d => d.name);
-                const weeklyMatMap = {};
-
-                // Use filtered data for stacked bars to show composition of CURRENT view
-                // Group key depends on viewMode
-                filtered.forEach(d => {
-                    let key = "";
-                    if (viewMode === 'daily') key = `${d.hour}:00`;
-                    else if (viewMode === 'weekly' || viewMode === 'monthly') key = d.date.split('-').slice(1).join('/');
-                    else key = MONTH_NAMES[d.month - 1];
-
-                    if (!weeklyStaffMap[key]) weeklyStaffMap[key] = { name: key, Others: 0, sortKey: d.date || d.month };
-                    if (!weeklyMatMap[key]) weeklyMatMap[key] = { name: key, Others: 0, sortKey: d.date || d.month };
-
-                    if (topStaff.includes(d.sourceName)) {
-                        weeklyStaffMap[key][d.sourceName] = (weeklyStaffMap[key][d.sourceName] || 0) + d.count;
-                    } else {
-                        weeklyStaffMap[key]['Others'] += d.count;
-                    }
-
-                    if (topMats.includes(d.material)) {
-                        weeklyMatMap[key][d.material] = (weeklyMatMap[key][d.material] || 0) + d.count;
-                    } else {
-                        weeklyMatMap[key]['Others'] += d.count;
-                    }
-                });
-
-                // Helper to sort dynamic keys
-                const sorter = (a, b) => {
-                    if (viewMode === 'daily') return parseInt(a.name) - parseInt(b.name);
-                    if (viewMode === 'yearly') return MONTH_NAMES.indexOf(a.name) - MONTH_NAMES.indexOf(b.name);
-                    return a.name.localeCompare(b.name);
-                };
-
-                const weeklyStaffStack = Object.values(weeklyStaffMap).sort(sorter);
-                const weeklyMatStack = Object.values(weeklyMatMap).sort(sorter);
-
-                let titleText = "";
-                if (viewMode === 'daily') titleText = `วันที่ ${selectedDate}`;
-                else if (viewMode === 'weekly') titleText = `สัปดาห์ ${selectedWeek} (${selectedYear})`;
-                else if (viewMode === 'monthly') titleText = `เดือน ${MONTH_NAMES[selectedMonth-1]} (${selectedYear})`;
-                else titleText = `ปี ${selectedYear}`;
-
-                return { 
-                    total, sourceData, sourceUnknown, materialData, materialUnknown, processData, processUnknown, categoryData, 
-                    weeklyStaffStack, weeklyMatStack, topStaff, topMats, dynamicTrendData, trendTitle,
-                    yearsList, weeksList, titleText
-                };
-            }, [processedData, viewMode, selectedDate, selectedMonth, selectedYear, selectedWeek]);
-
-            return (
-                <div className="min-h-screen pb-20">
-                    {/* Header */}
-                    <div className="gradient-header p-6 shadow-lg mb-8">
-                        <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
-                            <div>
-                                <h1 className="text-3xl font-bold flex items-center gap-2">
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                                    QC Inspection Report
-                                </h1>
-                                <p className="text-blue-100 text-sm mt-1">รายงานคุณภาพและการตรวจพบสิ่งแปลกปลอม (Real-time)</p>
-                            </div>
-                            
-                            <div className="flex gap-2 items-end bg-white/10 p-3 rounded-xl border border-white/20 backdrop-blur-md">
-                                <div className="flex flex-col">
-                                    <label className="text-xs text-blue-100 font-bold mb-1">เลือกมุมมอง</label>
-                                    <select className="bg-white text-slate-900 font-bold text-sm rounded px-3 py-1.5 outline-none border-0 shadow-sm w-32"
-                                            value={viewMode} onChange={(e) => setViewMode(e.target.value)}>
-                                        <option value="daily">รายวัน</option>
-                                        <option value="weekly">รายสัปดาห์</option>
-                                        <option value="monthly">รายเดือน</option>
-                                        <option value="yearly">รายปี</option>
-                                    </select>
-                                </div>
-
-                                {viewMode === 'daily' && (
-                                    <div className="flex flex-col">
-                                        <label className="text-xs text-blue-100 mb-1">เลือกวันที่</label>
-                                        <input type="date" className="bg-white text-slate-800 text-sm rounded px-3 py-1.5 outline-none shadow-sm"
-                                            value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} />
-                                    </div>
-                                )}
-
-                                {(viewMode === 'weekly') && (
-                                    <>
-                                        <div className="flex flex-col">
-                                            <label className="text-xs text-blue-100 mb-1">ปี</label>
-                                            <select className="bg-white text-slate-800 text-sm rounded px-3 py-1.5 outline-none shadow-sm"
-                                                    value={selectedYear} onChange={(e) => setSelectedYear(e.target.value)}>
-                                                {stats.yearsList.map(y => <option key={y} value={y}>{y}</option>)}
-                                            </select>
-                                        </div>
-                                        <div className="flex flex-col">
-                                            <label className="text-xs text-blue-100 mb-1">สัปดาห์</label>
-                                            <select className="bg-white text-slate-800 text-sm rounded px-3 py-1.5 outline-none shadow-sm"
-                                                    value={selectedWeek} onChange={(e) => setSelectedWeek(e.target.value)}>
-                                                {stats.weeksList.map(w => <option key={w} value={w}>{w}</option>)}
-                                            </select>
-                                        </div>
-                                    </>
-                                )}
-
-                                {(viewMode === 'monthly') && (
-                                    <>
-                                        <div className="flex flex-col">
-                                            <label className="text-xs text-blue-100 mb-1">ปี</label>
-                                            <select className="bg-white text-slate-800 text-sm rounded px-3 py-1.5 outline-none shadow-sm"
-                                                    value={selectedYear} onChange={(e) => setSelectedYear(e.target.value)}>
-                                                {stats.yearsList.map(y => <option key={y} value={y}>{y}</option>)}
-                                            </select>
-                                        </div>
-                                        <div className="flex flex-col">
-                                            <label className="text-xs text-blue-100 mb-1">เดือน</label>
-                                            <select className="bg-white text-slate-800 text-sm rounded px-3 py-1.5 outline-none shadow-sm"
-                                                    value={selectedMonth} onChange={(e) => setSelectedMonth(parseInt(e.target.value))}>
-                                                {MONTH_NAMES.map((m, i) => <option key={i} value={i+1}>{m}</option>)}
-                                            </select>
-                                        </div>
-                                    </>
-                                )}
-
-                                {viewMode === 'yearly' && (
-                                    <div className="flex flex-col">
-                                        <label className="text-xs text-blue-100 mb-1">ปี</label>
-                                        <select className="bg-white text-slate-800 text-sm rounded px-3 py-1.5 outline-none shadow-sm"
-                                                value={selectedYear} onChange={(e) => setSelectedYear(e.target.value)}>
-                                            <option value="All">All Years</option>
-                                            {stats.yearsList.map(y => <option key={y} value={y}>{y}</option>)}
-                                        </select>
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-                    </div>
-
-                    <div className="max-w-7xl mx-auto px-4 space-y-6">
-                        
-                        {/* KPI Cards */}
-                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                            <div className="glass-card p-5 border-l-4 border-blue-600">
-                                <p className="text-xs text-slate-500 uppercase font-bold tracking-wider">Total Defects</p>
-                                <h3 className="text-3xl font-bold text-slate-800">{stats.total} <span className="text-sm text-slate-400 font-normal">items</span></h3>
-                                <p className="text-xs text-blue-500 mt-1 font-medium bg-blue-50 inline-block px-1 rounded">{stats.titleText}</p>
-                            </div>
-                            <div className="glass-card p-5 border-l-4 border-emerald-500">
-                                <p className="text-xs text-slate-500 uppercase font-bold tracking-wider">Top Material</p>
-                                <h3 className="text-xl font-bold text-emerald-600 truncate">{stats.materialData[0]?.name || '-'}</h3>
-                                <p className="text-xs text-slate-400">({stats.materialData[0]?.value} ชิ้น)</p>
-                            </div>
-                            <div className="glass-card p-5 border-l-4 border-indigo-500">
-                                <p className="text-xs text-slate-500 uppercase font-bold tracking-wider">Top Process</p>
-                                <h3 className="text-xl font-bold text-indigo-600 truncate">{stats.processData[0]?.name || '-'}</h3>
-                                <p className="text-xs text-slate-400">({stats.processData[0]?.value} ชิ้น)</p>
-                            </div>
-                            <div className="glass-card p-5 border-l-4 border-red-500">
-                                <p className="text-xs text-slate-500 uppercase font-bold tracking-wider">Focus Person</p>
-                                <h3 className="text-xl font-bold text-red-600 truncate">{stats.sourceData[0]?.name || '-'}</h3>
-                                <p className="text-xs text-slate-400">({stats.sourceData[0]?.value} ชิ้น)</p>
-                            </div>
-                        </div>
-
-                        {/* DYNAMIC TREND CHART */}
-                        <div className="glass-card p-6">
-                            <h3 className="text-lg font-bold text-slate-700 mb-4 flex items-center gap-2">
-                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>
-                                {stats.trendTitle}
-                            </h3>
-                            <div style={{ height: 300 }}>
-                                <ResponsiveContainer width="100%" height="100%">
-                                    <LineChart data={stats.dynamicTrendData} margin={{ top: 10, right: 30, left: 10, bottom: 0 }}>
-                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                                        <XAxis dataKey="name" tick={{fontSize: 12, fill: '#64748b'}} />
-                                        <YAxis tick={{fontSize: 12, fill: '#64748b'}} allowDecimals={false} />
-                                        <Tooltip cursor={{stroke: '#94a3b8', strokeWidth: 1, strokeDasharray: '3 3'}} />
-                                        <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={3} dot={{ r: 4, fill: '#3b82f6', strokeWidth: 2, stroke: '#fff' }} activeDot={{ r: 6 }} />
-                                    </LineChart>
-                                </ResponsiveContainer>
-                            </div>
-                        </div>
-
-                        {/* STACKED TREND CHARTS (Dynamic based on filter) */}
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                            <div className="glass-card p-6">
-                                <h3 className="text-lg font-bold text-slate-700 mb-4 flex items-center gap-2">
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
-                                    Composition: ผู้รับผิดชอบ (Top 5)
-                                </h3>
-                                <div style={{ height: 300 }}>
-                                    <ResponsiveContainer width="100%" height="100%">
-                                        <BarChart data={stats.weeklyStaffStack} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
-                                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                                            <XAxis dataKey="name" tick={{fontSize: 12, fill: '#64748b'}} />
-                                            <YAxis tick={{fontSize: 12, fill: '#64748b'}} allowDecimals={false} />
-                                            <Tooltip cursor={{fill: '#f1f5f9'}} />
-                                            <Legend wrapperStyle={{fontSize: '11px', paddingTop: '10px'}} />
-                                            {stats.topStaff.map((name, idx) => (
-                                                <Bar key={name} dataKey={name} stackId="a" fill={STACK_COLORS[idx % STACK_COLORS.length]} />
-                                            ))}
-                                            <Bar dataKey="Others" stackId="a" fill="#cbd5e1" />
-                                        </BarChart>
-                                    </ResponsiveContainer>
-                                </div>
-                            </div>
-                            <div className="glass-card p-6">
-                                <h3 className="text-lg font-bold text-slate-700 mb-4 flex items-center gap-2">
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
-                                    Composition: วัตถุดิบ (Top 5)
-                                </h3>
-                                <div style={{ height: 300 }}>
-                                    <ResponsiveContainer width="100%" height="100%">
-                                        <BarChart data={stats.weeklyMatStack} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
-                                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                                            <XAxis dataKey="name" tick={{fontSize: 12, fill: '#64748b'}} />
-                                            <YAxis tick={{fontSize: 12, fill: '#64748b'}} allowDecimals={false} />
-                                            <Tooltip cursor={{fill: '#f1f5f9'}} />
-                                            <Legend wrapperStyle={{fontSize: '11px', paddingTop: '10px'}} />
-                                            {stats.topMats.map((name, idx) => (
-                                                <Bar key={name} dataKey={name} stackId="a" fill={STACK_COLORS[idx % STACK_COLORS.length]} />
-                                            ))}
-                                            <Bar dataKey="Others" stackId="a" fill="#cbd5e1" />
-                                        </BarChart>
-                                    </ResponsiveContainer>
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Chart Row 1: Material & Process (FILTERED) */}
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                            <div className="glass-card p-6">
-                                <h3 className="text-lg font-bold text-slate-700 mb-4 flex items-center gap-2">📦 วัตถุดิบ (Top 10) <span className="text-sm font-normal text-blue-500 ml-2">[{stats.titleText}]</span></h3>
-                                <div style={{ height: 300 }}>
-                                    <ResponsiveContainer width="100%" height="100%">
-                                        <BarChart data={stats.materialData.slice(0,10)} layout="vertical" margin={{ left: 20 }}>
-                                            <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0" />
-                                            <XAxis type="number" hide />
-                                            <YAxis dataKey="name" type="category" width={100} tick={{fontSize: 12, fill: '#64748b'}} />
-                                            <Tooltip cursor={{fill: '#f1f5f9'}} />
-                                            <Bar dataKey="value" fill="#10b981" radius={[0,4,4,0]} barSize={20} label={{ position: 'right', fontSize: 11, fill: '#666' }} />
-                                        </BarChart>
-                                    </ResponsiveContainer>
-                                </div>
-                            </div>
-                            <div className="glass-card p-6">
-                                <h3 className="text-lg font-bold text-slate-700 mb-4 flex items-center gap-2">⚙️ ขั้นตอน (Top 10) <span className="text-sm font-normal text-blue-500 ml-2">[{stats.titleText}]</span></h3>
-                                <div style={{ height: 300 }}>
-                                    <ResponsiveContainer width="100%" height="100%">
-                                        <BarChart data={stats.processData.slice(0,10)} layout="vertical" margin={{ left: 20 }}>
-                                            <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0" />
-                                            <XAxis type="number" hide />
-                                            <YAxis dataKey="name" type="category" width={100} tick={{fontSize: 12, fill: '#64748b'}} />
-                                            <Tooltip cursor={{fill: '#f1f5f9'}} />
-                                            <Bar dataKey="value" fill="#6366f1" radius={[0,4,4,0]} barSize={20} label={{ position: 'right', fontSize: 11, fill: '#666' }} />
-                                        </BarChart>
-                                    </ResponsiveContainer>
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Chart Row 2: Pie & Source (FILTERED) */}
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                            <div className="glass-card p-6">
-                                <h3 className="text-lg font-bold text-slate-700 mb-4 flex items-center gap-2">🍰 ประเภทปัญหา <span className="text-sm font-normal text-blue-500 ml-2">[{stats.titleText}]</span></h3>
-                                <div style={{ height: 300 }}>
-                                    <ResponsiveContainer width="100%" height="100%">
-                                        <PieChart>
-                                            <Pie 
-                                                data={stats.categoryData} 
-                                                dataKey="value" 
-                                                nameKey="name" 
-                                                cx="50%" 
-                                                cy="50%" 
-                                                outerRadius={80} 
-                                                innerRadius={40}
-                                                paddingAngle={2}
-                                                label={({ name, percent }) => percent === 0 ? null : `${(percent * 100).toFixed(0)}%`}
-                                                labelLine={true}
-                                                style={{ fontSize: '11px' }}
-                                            >
-                                                {stats.categoryData.map((entry, index) => (
-                                                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                                                ))}
-                                            </Pie>
-                                            <Tooltip contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)'}} />
-                                            <Legend layout="horizontal" verticalAlign="bottom" align="center" wrapperStyle={{fontSize: '11px', paddingTop: '10px'}} />
-                                        </PieChart>
-                                    </ResponsiveContainer>
-                                </div>
-                            </div>
-                            <div className="glass-card p-6">
-                                <h3 className="text-lg font-bold text-slate-700 mb-4">🏆 Top 10 ผู้รับผิดชอบ <span className="text-sm font-normal text-blue-500 ml-2">[{stats.titleText}]</span></h3>
-                                <div style={{ height: 300 }}>
-                                    <ResponsiveContainer width="100%" height="100%">
-                                        <BarChart data={stats.sourceData.slice(0,10)} layout="vertical" margin={{ left: 10 }}>
-                                            <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0" />
-                                            <XAxis type="number" hide />
-                                            <YAxis dataKey="name" type="category" width={100} tick={{fontSize: 11, fill: '#64748b'}} />
-                                            <Tooltip cursor={{fill: '#f1f5f9'}} />
-                                            <Bar dataKey="value" fill="#ef4444" radius={[0,4,4,0]} barSize={15} label={{ position: 'right', fontSize: 11, fill: '#666' }} />
-                                        </BarChart>
-                                    </ResponsiveContainer>
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Data Table */}
-                        <div className="glass-card overflow-hidden">
-                            <div className="p-4 bg-slate-50 border-b border-slate-200 font-bold text-slate-700 flex justify-between items-center">
-                                <span>รายการข้อมูลล่าสุด (Latest Entries)</span>
-                                <span className="text-xs text-gray-400">Filtered by: {stats.titleText}</span>
-                            </div>
-                            <div className="overflow-x-auto max-h-[400px]">
-                                <table className="w-full text-sm text-left text-slate-600">
-                                    <thead className="bg-white sticky top-0 shadow-sm z-10">
-                                        <tr>
-                                            <th className="px-6 py-3 bg-slate-50 text-slate-500 font-semibold">Date/Time</th>
-                                            <th className="px-6 py-3 bg-slate-50 text-slate-500 font-semibold">Week</th>
-                                            <th className="px-6 py-3 bg-slate-50 text-slate-500 font-semibold">Material</th>
-                                            <th className="px-6 py-3 bg-slate-50 text-slate-500 font-semibold">Process</th>
-                                            <th className="px-6 py-3 bg-slate-50 text-slate-500 font-semibold">Source</th>
-                                            <th className="px-6 py-3 bg-slate-50 text-slate-500 font-semibold w-1/3">Raw Report</th>
-                                            <th className="px-6 py-3 bg-slate-50 text-slate-500 font-semibold text-center">Qty</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-slate-100 bg-white">
-                                        {processedData
-                                            .filter(d => {
-                                                if (viewMode === 'daily') return d.date === selectedDate;
-                                                if (viewMode === 'weekly') return d.week === selectedWeek && d.year === selectedYear;
-                                                if (viewMode === 'monthly') return d.month === parseInt(selectedMonth) && d.year === selectedYear;
-                                                if (viewMode === 'yearly') return d.year === selectedYear;
-                                                return true;
-                                            })
-                                            .map((item, idx) => {
-                                                const summary = getRowSummary(item.report);
-                                                if(!summary) return null;
-                                                const prod = detectMaterial(item.report);
-                                                const proc = detectProcess(item.report);
-                                                
-                                                return (
-                                                    <tr key={idx} className="hover:bg-blue-50 transition">
-                                                        <td className="px-6 py-3 whitespace-nowrap">
-                                                            <div className="font-medium text-slate-700">{item.date}</div>
-                                                            <div className="text-xs text-blue-400">{item.time}</div>
-                                                        </td>
-                                                        <td className="px-6 py-3 text-xs text-slate-500 font-bold">{item.week}</td>
-                                                        <td className="px-6 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium ${prod.includes('ไม่ระบุ') ? 'text-gray-400 border border-gray-200' : 'bg-emerald-100 text-emerald-700'}`}>{prod}</span></td>
-                                                        <td className="px-6 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium ${proc.includes('ไม่ระบุ') ? 'text-gray-400 border border-gray-200' : 'bg-indigo-100 text-indigo-700'}`}>{proc}</span></td>
-                                                        <td className="px-6 py-3 text-blue-600 font-medium">{summary.displaySource}</td>
-                                                        <td className="px-6 py-3 text-xs text-slate-500">{item.report}</td>
-                                                        <td className="px-6 py-3 text-center font-bold text-slate-800">{summary.totalCount}</td>
-                                                    </tr>
-                                                );
-                                            })
-                                        }
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            );
-        };
-
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
+        // เริ่มทำงานเมื่อโหลดหน้าเสร็จ
+        window.addEventListener('load', start);
     </script>
 </body>
 </html>
